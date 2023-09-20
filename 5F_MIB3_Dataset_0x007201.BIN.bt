@@ -1,0 +1,451 @@
+//------------------------------------------------
+//--- 010 Editor v12.0 Binary Template
+//
+//      File: 0x007201.BIN
+//   Authors: Joao Almeida, Alex Strelets
+//   Version: 0.3
+//   Purpose: Parse the contents of the MIB3 Sound Channels and Effects
+//   Category:
+//   File Mask:
+//   ID Bytes:
+//   History: 0.1 - Initial version
+//            0.2 - Small tweaks performed.
+//            0.3 - Synced changes and tables with the latest MIB2 0x3000 dataset parser
+//
+//   Considering the following structure:
+//     Version - 0-3 bytes (values from 0x00000000 to 0x7F7F7F7F).
+//     Data is 4-2047 bytes in hexadecimal format (each byte has values from 0x00 to 0xFF).
+//     Checksum - 2048-2051 bytes according to CRC-32 (values from 0x00000000 to 0xFFFFFFFF).
+//
+//
+//------------------------------------------------
+
+BigEndian();
+
+string getSignalflow(int type) {
+    switch (type) {
+        case 0x10: return "2ch (4.0)";
+        case 0x20: return "4ch (8.0)";
+        case 0x21: return "4ch / 2ch compatible (8.0 / 4.0)";
+        case 0x25: return "5ch center (9.0)"; // SEAT ONLY, needs more investigation
+        case 0x30: return "6ch center sub (9.1)";
+        case 0x31: return "6ch center sub / 2/4ch compatible (9.1 / 8.0 / 4.0)";
+        case 0x32: return "6ch doublesub (8.2)";
+        case 0x33: return "6ch doublesub / 2/4ch compatible (8.2 / 8.0 / 4.0)";
+        case 0x34: return "6ch frontwoofer (9.1)";
+        case 0x35: return "6ch frontwoofer / 2/4ch compatible (9.1 / 8.0 / 4.0)";
+        default:   return "Unknown";
+    }
+}
+
+string getFilterType(int type) {
+    switch (type) {
+        case 0x00: return "Bypass";
+        case 0x01: return "Shelf 1 High";
+        case 0x02: return "Shelf 2 High";
+        case 0x03: return "Shelf 1 Low";
+        case 0x04: return "Shelf 2 Low";
+        case 0x05: return "Peak 1";
+        case 0x06: return "Peak 2";
+        case 0x07: return "Highpass 1";
+        case 0x08: return "Highpass 2";
+        case 0x09: return "Lowpass 1";
+        case 0x0A: return "Lowpass 2";
+        case 0x10: return "Coefficients";
+        default:   return "Unknown";
+    }
+}
+
+typedef struct {
+    ubyte type <bgcolor=cAqua, read=getFilterType>;
+    ubyte quality <bgcolor=cLtGreen>;   // [0.2 .. 5]
+    ushort frequency <bgcolor=cGreen>;  // [20 .. 20000]
+    ubyte gainOffset <bgcolor=cDkAqua>; // [-6 .. +6]
+    ubyte maxGain <bgcolor=cDkAqua>;    // [0  .. 15]
+} EQ;
+
+typedef struct {
+    ubyte type <bgcolor=cAqua, read=getFilterType>;
+    ubyte quality <bgcolor=cLtGreen>;
+    ushort frequency <bgcolor=cGreen>;
+    ubyte gain[19] <bgcolor=cDkAqua>;
+} EQ2;
+
+typedef struct {
+    ubyte type <bgcolor=cAqua, read=getFilterType>;
+    ubyte quality <bgcolor=cLtGreen>;
+    ushort frequency <bgcolor=cGreen>;
+    ubyte gain[19] <bgcolor=cDkAqua>;
+    ubyte volume[19]<bgcolor=cAqua>;    
+} LoudnessEQ;
+
+typedef struct (int length) {
+    ubyte type <bgcolor=cAqua, read=getFilterType>;
+    ubyte quality <bgcolor=cLtGreen>;
+    ushort frequency <bgcolor=cGreen>;
+    byte gain <bgcolor=cDkAqua>; // [-12.5 .. 12.5]
+    ubyte coefficients[length] <bgcolor=cDkGray>;
+} EQ3;
+
+typedef struct {
+    EQ3 Filter1(16);
+    EQ3 Filter2(16);
+    EQ3 Filter3(16);
+    EQ3 Filter4(0);
+    EQ3 Filter5(0);
+    EQ3 Filter6(0);
+    byte Gain <bgcolor=cLtYellow>;
+    ubyte Delay <bgcolor=cYellow>;
+    ubyte Phase <bgcolor=cDkYellow>;
+} CarEQ;
+
+float calcQuality (ubyte value) {
+    return (float) value / 10;
+}
+
+float calcGain (byte value) {
+    return (float) value / 12.5;
+}
+
+float calcAbsGain (ubyte value) {
+    return (float) value / 12.5;
+}
+
+float calcMaxGain (ubyte value) {
+    return (float) value / 15;
+}
+
+float calcVSGain (ubyte value) {
+    return (float) value / 10;
+}
+
+void printEQ2Header(ubyte type, ubyte quality, ushort frequency, string name) {
+    Printf("\n%s\nType            Q Factor       Frequency\n", name);
+    Printf("==============================================\n");
+    Printf("%-13s%7.1f\t %6gHz\n",
+        getFilterType(type),
+        calcQuality(quality),
+        frequency
+    );
+    Printf("===========================================================================================================================\n");
+}
+
+void printEQ2(EQ2 &s, string name) {
+    printEQ2Header(s.type, s.quality, s.frequency, name);
+    Printf("Gain:   \t");
+    for (i = 0; i < 19; i++) {
+        Printf("%5.2f ", calcVSGain(s.gain[i]));
+    }
+    Printf("\n");
+}
+
+void printLoudnessEQ(LoudnessEQ &s, string name) {
+    printEQ2Header(s.type, s.quality, s.frequency, name);
+    Printf("Gain:   \t");
+    for (i = 0; i < 19; i++) {
+        Printf("%5.2f ", calcAbsGain(s.gain[i]));
+    }
+    Printf("\nVolume: \t");
+    for (i = 0; i < 19; i++) {
+        Printf("%5g ", s.volume[i]);
+    }
+    Printf("\n");
+}
+
+local string spacer = "\t\t";
+
+void printEQFilter(EQ3 &filter, int index) {
+    local string str = (index > 1 ? "\n" : spacer);
+    Printf("%-13s  %5.1f\t  %6gHz\t      %5.2f %s",
+        getFilterType(filter.type),
+        calcQuality(filter.quality),
+        filter.frequency,
+        calcGain(filter.gain),
+        str);
+}
+
+string getChannelName(int index) {
+    switch (index) {
+        case 0: return "REAR_R_CH "; break;
+        case 1: return "FRONT_R_CH"; break;
+        case 2: return "FRONT_L_CH"; break;
+        case 3: return "REAR_L_CH "; break;
+        case 4: return "SUBWOOFER "; break;
+        case 5: return "CENTER_CH "; break;
+    }
+    return Str("CHANNEL_%i ", index+1);
+}
+
+string getEQBand(int index) {
+    switch (index) {
+        case 0: return "Bass"; break;
+        case 1: return "MidBass "; break;
+        case 2: return "Middle"; break;
+        case 3: return "MidTreble"; break;
+        case 4: return "Treble"; break;
+    }
+    return Str("Band_%i ", index+1);
+}
+
+void printChannelHeader(CarEQ eq[], int index, int profileIndex) {
+    local string str = (profileIndex > 1 ? "\n" : spacer);
+    Printf("%s [ Gain: %-6.2f Delay: %-2gms Phase: %s ]%s                    ",
+        getChannelName(index),
+        calcGain(eq[index].Gain),
+        (float) eq[index].Delay,
+        (char) eq[index].Phase > 0 ? 'R' : '0',
+        str);
+}
+
+void printProfileName (int index) {
+    Printf("[ CarEQ SoundProfile #%i ]                                           %s", index, index > 2 ? "\n\n": spacer);
+}
+
+void printLines() {
+    local string str = "------------------------------------------------%s";
+    Printf(str, spacer);
+    Printf(str, spacer);
+    Printf(str, "\n");
+}
+
+void printDoubleLines() {
+    local string str = "=============================================================%s";
+    Printf(str, spacer);
+    Printf(str, spacer);
+    Printf(str, "\n");
+}
+
+void printFiltersHeader() {
+    local string str = "Type          Q Factor\t Frequency\t       Gain %s";
+    Printf(str, spacer);
+    Printf(str, spacer);
+    Printf(str, "\n");
+}
+
+// File read starts here
+
+char DatasetVersion[4] <bgcolor=cDkBlue>;
+byte Signalflow <bgcolor=cDkGreen, read=getSignalflow>;
+EQ ToneControls[5] <bgcolor=cDkGreen>;
+ubyte Subwoofer_maxGain <bgcolor=cLtYellow>; // subwoofer gain ???
+
+LoudnessEQ LoudnessLow <bgcolor=cDkGreen>;
+LoudnessEQ LoudnessHigh;
+
+// It seems that LoudnessHigh is very different from what it was previously.
+// We'll leave it like this for now. There are 42 hex missing to be interpreted
+// EQ2 LoudnessHigh;
+/*
+struct {
+    ubyte type <bgcolor=cAqua, read=getFilterType>;
+    ubyte quality <bgcolor=cLtGreen>;
+    ushort frequency <bgcolor=cGreen>;
+    struct { 
+        ubyte value[19] <bgcolor=cDkAqua>;
+    } Gains[3];
+} LoudnessHigh;
+*/
+struct {
+    ubyte value[19] <bgcolor=cGray>;
+} GALA[7];
+
+EQ2 VirtualSub;
+
+// UnkownFilter_2 is also very Different from what it was.
+// There is now a new structure with 15 filters - to be confirmed when they are applied
+// These are not different by channel - Might be an overall equalizer to the system?
+
+EQ3 UnknownFilter_2(0)[15] <optimize=true>;
+
+// This boy is a bit lost in here
+
+byte UnkownFilter_2_Byte <bgcolor=cPurple>;
+
+CarEQ Profile_1[6] <optimize=true>;
+CarEQ Profile_2[6] <optimize=true>;
+CarEQ Profile_3[6] <optimize=true>;
+
+// We have 5 Bytes that we're not sure what they do here
+// one of those bytes could be "Limiter THDmax" [0 .. 30]
+
+struct {
+    byte unknown[5] <bgcolor=cPurple>;
+} Limiters; // Warmth ??? potentially
+
+struct {
+    ubyte attackTime <bgcolor=cDkGreen>;
+    ushort releaseTime <bgcolor=cGreen>;
+    ubyte threshold <bgcolor=cLtGreen>;
+    ubyte holdTime <bgcolor=cAqua>;
+} DRC[6];
+
+// We have 1 Bytes that we're not sure what they do here
+
+ubyte Unknown_Byte <bgcolor=cPurple>;
+
+// We have 6 (Channels) x 4 (Filters) on MIB3. Additinal exploration required
+
+struct {
+    EQ3 Filter1(0);
+    EQ3 Filter2(0);
+    EQ3 Filter3(0);
+    EQ3 Filter4(0);
+    byte Gain <bgcolor=cLtYellow>;
+    ubyte Delay <bgcolor=cYellow>;
+    ubyte Phase <bgcolor=cDkYellow>;
+} UnknownEQ[6] <optimize=true>;
+
+
+ubyte empty[51] <bgcolor=cBlack>;
+char Identifier[8] <bgcolor=cBlue>;
+ubyte empty2[5] <bgcolor=cBlack>;
+
+FSeek(FileSize() - 4);
+uint checksum <bgcolor=cDkRed>;
+
+////////////////////////
+/// PARSING FINISHED ///
+////////////////////////
+
+local int i = 0;
+local int j = 0;
+local int k = 0;
+
+Printf("\nDATASET VERSION: %s",DatasetVersion);
+Printf("\nSIGNAL FLOW: %s\n", getSignalflow(Signalflow));
+
+Printf("\nEQ TONE CONTROLS");
+Printf("\nBand      Type           Q Factor       Frequency    MaxGain  GainOffset\n");
+Printf("========================================================================\n");
+for (i = 0; i < 5; i++) {
+    Printf("%-8s\t%-13s%7.1f\t %6gHz\t  %7.2f\t%10.2f\n",
+        getEQBand(i),
+        getFilterType(ToneControls[i].type),
+        calcQuality(ToneControls[i].quality),
+        ToneControls[i].frequency,
+        calcMaxGain(ToneControls[i].maxGain),
+        ToneControls[i].gainOffset / 12);
+}
+Printf("========================================================================\n");
+Printf("Subwoofer                        \t              %7.2f\n", calcMaxGain(Subwoofer_maxGain));
+
+printLoudnessEQ(LoudnessLow, "LOUDNESS LOW");
+printLoudnessEQ(LoudnessHigh, "LOUDNESS HIGH");
+
+
+Printf("\nGALA (SPEED-DEPENDENT VOLUME CONTROL)");
+Printf("\nLevel   \t Gain\n");
+Printf("==========================================");
+Printf("==========================================");
+Printf("==========================================\n");
+for ( i = 0; i < 7; i++ ) {
+    Printf("%-8i\t", i+1);
+    for ( j = 0; j < 19; j++ ) {
+        Printf("%5.2f ", calcAbsGain(GALA[i].value[j]));
+    }
+    Printf("\n");
+};
+Printf("==========================================");
+Printf("==========================================");
+Printf("==========================================\n");
+
+
+printEQ2(VirtualSub, "loudnessVirtual Sub");
+
+// Unkown Filter 2 is different on MIB3 - still to be confirmed. Adding a print for these 15 new filters
+// printEQ2(UnknownFilter_2, "UNKNOWN FILTER 2", true);
+// Adding new logic to print new(?) MIB3 Filters. Still TBC what these are
+
+Printf("\n");
+Printf("UNKNOWN FILTER 2\n");
+Printf("Type           Q Factor          Frequency             Gain\n");
+Printf("===========================================================\n");
+for (i = 0; i < 15; i++) {
+    Printf("%-13s%7.1f\t  %6gHz\t    %5.2f\n",
+        getFilterType(UnknownFilter_2[i].type),
+        calcQuality(UnknownFilter_2[i].quality),
+        UnknownFilter_2[i].frequency,
+        calcGain(UnknownFilter_2[i].gain)
+    );
+}
+Printf("===========================================================\n\n");
+
+printProfileName(1);
+printProfileName(2);
+printProfileName(3);
+for (i = 0; i < 6; i++) {
+    printChannelHeader(Profile_1, i, 1);
+    printChannelHeader(Profile_2, i, 1);
+    printChannelHeader(Profile_3, i, 2);
+    printLines();
+    printFiltersHeader();
+    printDoubleLines();
+    printEQFilter(Profile_1[i].Filter1, 1);
+    printEQFilter(Profile_2[i].Filter1, 1);
+    printEQFilter(Profile_3[i].Filter1, 2);
+    printEQFilter(Profile_1[i].Filter2, 1);
+    printEQFilter(Profile_2[i].Filter2, 1);
+    printEQFilter(Profile_3[i].Filter2, 2);
+    printEQFilter(Profile_1[i].Filter3, 1);
+    printEQFilter(Profile_2[i].Filter3, 1);
+    printEQFilter(Profile_3[i].Filter3, 2);
+    printEQFilter(Profile_1[i].Filter4, 1);
+    printEQFilter(Profile_2[i].Filter4, 1);
+    printEQFilter(Profile_3[i].Filter4, 2);
+    printEQFilter(Profile_1[i].Filter5, 1);
+    printEQFilter(Profile_2[i].Filter5, 1);
+    printEQFilter(Profile_3[i].Filter5, 2);
+    printEQFilter(Profile_1[i].Filter6, 1);
+    printEQFilter(Profile_2[i].Filter6, 1);
+    printEQFilter(Profile_3[i].Filter6, 2);
+    printDoubleLines();
+    Printf("\n");
+}
+
+Printf("LIMITERS\n");
+//Printf("\t\t\t\n");
+Printf("------------------------------------------------\n");
+for (i = 0; i < 5; i++) {
+    Printf("%6i    ", Limiters.unknown[i]);
+}
+Printf("\n\n");
+
+Printf("DYNAMIC RANGE COMPRESSION\n");
+Printf("Channel  Threshold   Attack     Hold    Release\n");
+Printf("================================================\n");
+for (i = 0; i < 6; i++) {
+    Printf("%s   %5.1f   %6.1f   %6.1f     %6g\n",
+        getChannelName(i),
+        DRC[i].threshold / -20,         // [-20 .. 0 ]
+        (float) DRC[i].attackTime / 20, // [0.5 .. 20]
+        (float) DRC[i].holdTime / 20,   // [0.5 .. 20]
+        DRC[i].releaseTime              // [5 .. 2000]
+    );
+}
+Printf("================================================");
+
+// Adding new logic to print new(?) MIB3 Filters. Still TBC what these are
+
+Printf("\n\n");
+Printf("GLOBAL FILTER 3 Shared\n\n");
+for (i = 0; i < 6; i++) {
+    Printf("%s [ Gain: %-6.2f Delay: %-2gms Phase: %s ]\n",
+        getChannelName(i),
+        calcGain(UnknownEQ[i].Gain),
+        (float) UnknownEQ[i].Delay,
+        (char) UnknownEQ[i].Phase > 0 ? 'R' : '0'
+    );
+    Printf("------------------------------------------------\n");
+    Printf("Type            Q Factor       Frequency                 Gain \n");
+    Printf("=============================================================\n");
+    printEQFilter(UnknownEQ[i].Filter1, 2);
+    printEQFilter(UnknownEQ[i].Filter2, 2);
+    printEQFilter(UnknownEQ[i].Filter3, 2);
+    printEQFilter(UnknownEQ[i].Filter4, 2);
+    Printf("=============================================================\n\n");
+}
+
+// Ignoring for now
+
+local uint file_checksum = Checksum(CHECKSUM_CRC32, 0, FileSize() - 4, -1, -1); // algo, size, length, poly, init
+Printf("\nFILE CHECKSUM: %.04X", file_checksum);
